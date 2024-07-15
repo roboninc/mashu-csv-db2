@@ -1,0 +1,16 @@
+{
+  "hostname": "localhost",
+  "database": "SAMPLE",
+  "port": 50000,
+  "userid": "db2inst1",
+  "password": "password",
+  "lang": "ja",
+  "remarks": [
+    "Alias",
+    "Description"
+  ],
+  "csvfile": "testdata/mashu.csv",
+  "systemSchema": "SYSCAT",
+  "targetSchema": [
+  ]
+}
