@@ -1,0 +1,3 @@
+config.json
+dest/mashu-csv-db2
+testdata/*.csv

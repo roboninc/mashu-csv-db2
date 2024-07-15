@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	_ "github.com/ibmdb/go_ibm_db"
 )
 
 // Db2Driver は、DB2 のドライバー名です。
