@@ -253,6 +253,9 @@ func (e *ZDb2Extractor) toColumn(m map[string]string) (*Column, string) {
 			}
 		}
 	}
+	if v, ok := m["LABEL"]; ok {
+		col.Alias = v
+	}
 	return col, formalName
 }
 

@@ -14,37 +14,17 @@ import (
 )
 
 func init() {
-	register(Db2Driver+".SYSCAT", &Db2Extractor{})
+	register(Db2Driver+".QSYS2", &IDb2Extractor{})
 }
 
-// Db2DSN は、DB2L への接続情報です。
-type Db2DSN struct {
-	Hostname string `json:"hostname"`
-	Database string `json:"database"`
-	Port     int    `json:"port"`
-	UserID   string `json:"userid"`
-	Password string `json:"password"`
-}
-
-// DSN は、sql.DB.Open() に渡す文字列を返します。
-func (n *Db2DSN) DSN() string {
-	return fmt.Sprintf("HOSTNAME=%s;DATABASE=%s;PORT=%d;UID=%s;PWD=%s",
-		n.Hostname,
-		n.Database,
-		n.Port,
-		n.UserID,
-		n.Password,
-	)
-}
-
-// Db2Extractor は、PostgreSQL から Metadata を抽出します。
-type Db2Extractor struct {
+// IDb2Extractor は、PostgreSQL から Metadata を抽出します。
+type IDb2Extractor struct {
 	pool   *sql.DB
 	config *Config
 }
 
 // Run は、メータデータの抽出を実行します。MetadataExtractor の実装です。
-func (e *Db2Extractor) Run(ctx context.Context,
+func (e *IDb2Extractor) Run(ctx context.Context,
 	dsn DataSourceName, out io.Writer) error {
 
 	myCtx, cancel := context.WithCancel(ctx)
@@ -63,8 +43,8 @@ func (e *Db2Extractor) Run(ctx context.Context,
 }
 
 // extractTables は、テーブル情報を抽出します。
-// https://www.ibm.com/docs/ja/db2/11.5?topic=views-syscattables
-func (e *Db2Extractor) extractTables(ctx context.Context,
+// https://www.ibm.com/docs/ja/i/7.5?topic=views-systables
+func (e *IDb2Extractor) extractTables(ctx context.Context,
 ) <-chan MetadataInProcess {
 
 	output := make(chan MetadataInProcess)
@@ -72,21 +52,21 @@ func (e *Db2Extractor) extractTables(ctx context.Context,
 		defer close(output)
 
 		cols, err := ColumnList(ctx, e.pool, `
-			SELECT COLNAME
-			FROM SYSCAT.COLUMNS
-			WHERE TABSCHEMA='SYSCAT'
-			  AND TABNAME='TABLES'
-			ORDER BY COLNO`)
+			SELECT COLUMN_NAME
+			FROM QSYS2.SYSCOLUMNS
+			WHERE TABLE_OWNER='QSYS2'
+			  AND TABLE_NAME='SYSTABLES'
+			ORDER BY ORDINAL_POSITION`)
 		if err != nil {
 			output <- MetadataInProcess{Err: err}
 			return
 		}
 
 		query := NewQuery(cols, fmt.Sprintf(
-			`FROM SYSCAT.TABLES
-			WHERE TYPE in ('S', 'T', 'U', 'V', 'W')
-			  AND TABSCHEMA in %s
-			ORDER BY TABSCHEMA, TABNAME`,
+			`FROM QSYS2.SYSTABLES
+			WHERE TYPE != 'A'
+              AND TABLE_OWNER in %s
+			ORDER BY TABLE_OWNER, TABLE_NAME`,
 			e.config.TargetSchemaInClause(),
 		))
 
@@ -114,18 +94,18 @@ func (e *Db2Extractor) extractTables(ctx context.Context,
 }
 
 // toMetadata は、information_schema.tables の行の map から Metadata を作ります。
-func (e *Db2Extractor) toMetadata(m map[string]string) *Metadata {
+func (e *IDb2Extractor) toMetadata(m map[string]string) *Metadata {
 	meta := &Metadata{
 		MetaType: 1, // core.TableData
 		Lang:     e.config.Lang,
 	}
-	if v, ok := m["TABNAME"]; ok {
+	if v, ok := m["TABLE_NAME"]; ok {
 		meta.Name = v
 	}
-	if v, ok := m["TABSCHEMA"]; ok && meta.Name != "" {
+	if v, ok := m["TABLE_OWNER"]; ok && meta.Name != "" {
 		meta.FormalName = strings.TrimSpace(v) + "." + meta.Name
 	}
-	if v, ok := m["REMARKS"]; ok {
+	if v, ok := m["LONG_COMMENT"]; ok {
 		for _, str := range e.config.Remarks {
 			switch str {
 			case "Alias":
@@ -139,8 +119,8 @@ func (e *Db2Extractor) toMetadata(m map[string]string) *Metadata {
 }
 
 // extractColumns は、カラム情報を抽出します。
-// https://www.ibm.com/docs/ja/db2/11.5?topic=views-syscatcolumns
-func (e *Db2Extractor) extractColumns(ctx context.Context,
+// https://www.ibm.com/docs/ja/i/7.5?topic=views-syscolumns
+func (e *IDb2Extractor) extractColumns(ctx context.Context,
 	input <-chan MetadataInProcess) <-chan MetadataInProcess {
 
 	output := make(chan MetadataInProcess)
@@ -148,20 +128,20 @@ func (e *Db2Extractor) extractColumns(ctx context.Context,
 		defer close(output)
 
 		cols, err := ColumnList(ctx, e.pool, `
-			SELECT COLNAME 
-			FROM SYSCAT.COLUMNS 
-			WHERE TABSCHEMA='SYSCAT'
-			  AND TABNAME='COLUMNS'
-			ORDER BY COLNO`)
+			SELECT COLUMN_NAME 
+			FROM QSYS2.SYSCOLUMNS 
+			WHERE TABLE_OWNER='QSYS2'
+			  AND TABLE_NAME='SYSCOLUMNS'
+			ORDER BY ORDINAL_POSITION`)
 		if err != nil {
 			output <- MetadataInProcess{Err: err}
 			return
 		}
 
 		query := NewQuery(cols, fmt.Sprintf(
-			`FROM SYSCAT.COLUMNS
-		    WHERE TABSCHEMA in %s
-			ORDER BY TABSCHEMA, TABNAME, COLNO`,
+			`FROM QSYS2.SYSCOLUMNS
+			WHERE TABLE_OWNER in %s
+			ORDER BY TABLE_OWNER, TABLE_NAME, ORDINAL_POSITION`,
 			e.config.TargetSchemaInClause(),
 		))
 
@@ -226,26 +206,22 @@ func (e *Db2Extractor) extractColumns(ctx context.Context,
 
 // toColumn は、information_schema.columns の行の map から Column と
 // Metadata.FormalName を作ります。
-func (e *Db2Extractor) toColumn(m map[string]string) (*Column, string) {
+func (e *IDb2Extractor) toColumn(m map[string]string) (*Column, string) {
 	col := &Column{}
-	if v, ok := m["COLNAME"]; ok {
+	if v, ok := m["COLUMN_NAME"]; ok {
 		col.Name = v
 	}
-	if t, ok := m["TYPENAME"]; ok {
-		if s, ok := m["TYPESCHEMA"]; ok {
-			col.Type = fmt.Sprintf("%s.%s", strings.TrimSpace(s), t)
-		} else {
-			col.Type = t
-		}
+	if v, ok := m["DATA_TYPE"]; ok {
+		col.Type = strings.TrimSpace(v)
 	}
-	if v, ok := m["NULLS"]; ok {
+	if v, ok := m["IS_NULLABLE"]; ok {
 		if v == "Y" {
 			col.Mode = 0
 		} else {
 			col.Mode = 1
 		}
 	}
-	if v, ok := m["COLNO"]; ok {
+	if v, ok := m["ORDINAL_POSITION"]; ok {
 		i, err := strconv.Atoi(v)
 		if err == nil {
 			col.Order = i
@@ -253,21 +229,20 @@ func (e *Db2Extractor) toColumn(m map[string]string) (*Column, string) {
 	}
 
 	var formalName string
-	if v, ok := m["TABSCHEMA"]; ok {
+	if v, ok := m["TABLE_OWNER"]; ok {
 		formalName = strings.TrimSpace(v)
 	}
 	formalName += "."
-	if v, ok := m["TABNAME"]; ok {
+	if v, ok := m["TABLE_NAME"]; ok {
 		formalName += v
 	}
-	if v, ok := m["KEYSEQ"]; ok {
-		i, err := strconv.Atoi(v)
-		if err == nil {
+	if v, ok := m["IS_IDENTITY"]; ok {
+		if v == "YES" {
 			col.KeyType.Constraint = 1
-			col.KeyType.Order = i
+			col.KeyType.Order = 0
 		}
 	}
-	if v, ok := m["REMARKS"]; ok {
+	if v, ok := m["COLUMN_TEXT"]; ok {
 		for _, str := range e.config.Remarks {
 			switch str {
 			case "Alias":
@@ -277,11 +252,14 @@ func (e *Db2Extractor) toColumn(m map[string]string) (*Column, string) {
 			}
 		}
 	}
+	if v, ok := m["COLUMN_HEADING"]; ok {
+		col.Alias = v
+	}
 	return col, formalName
 }
 
 // FindSchema は、スキーマの一覧を取得する。
-func (e *Db2Extractor) FindSchema(ctx context.Context, dsn DataSourceName) ([]string, error) {
+func (e *IDb2Extractor) FindSchema(ctx context.Context, dsn DataSourceName) ([]string, error) {
 	db, err := sql.Open(Db2Driver, dsn.DSN())
 	if err != nil {
 		return nil, err
@@ -289,9 +267,9 @@ func (e *Db2Extractor) FindSchema(ctx context.Context, dsn DataSourceName) ([]st
 	defer db.Close()
 
 	rows, err := db.QueryContext(ctx, `
-	    SELECT TABSCHEMA
-		FROM SYSCAT.TABLES
-		GROUP BY TABSCHEMA`)
+	    SELECT CREATOR
+		FROM QSYS2.SYSTABLES
+		GROUP BY TABLE_OWNER`)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +284,6 @@ func (e *Db2Extractor) FindSchema(ctx context.Context, dsn DataSourceName) ([]st
 	return result, nil
 }
 
-func (e *Db2Extractor) SetConfig(config *Config) {
+func (e *IDb2Extractor) SetConfig(config *Config) {
 	e.config = config
 }
